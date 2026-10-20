@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard de proyectos de construcción</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root { --ink:#1d2d3a; --muted:#5b6b78; --accent:#7a2e2e; --paper:#f4f6f8; --card:#fff; --line:#d9e0e6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI",Arial,sans-serif; background:var(--paper); color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:24px 32px; }
+  header h1 { margin:0 0 4px; font-size:1.6rem; }
+  main { max-width:1200px; margin:0 auto; padding:24px; display:grid; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }
+  .kpi span { display:block; color:var(--muted); font-size:.85rem; }
+  .kpi strong { font-size:1.4rem; }
+  .graficos { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:20px; }
+  .nota { color:var(--muted); font-size:.9rem; }
+  select, input { font-size:1rem; padding:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gestión de proyectos de construcción</h1>
+  <div>Dashboard interactivo: costo, duración y riesgo</div>
+</header>
+<main>
+  <section class="card">
+    <h2>Cargar datos</h2>
+    <p>Selecciona <b>projects.csv</b>. Se procesa en tu navegador; las filas duplicadas se excluyen.</p>
+    <input type="file" id="archivo" accept=".csv">
+    <label style="margin-left:16px">Tipo de proyecto:
+      <select id="filtro" disabled><option value="Todos">Todos</option></select>
+    </label>
+    <p class="nota" id="estado">Carga el archivo para generar el dashboard.</p>
+  </section>
+  <section class="kpis" id="kpis"></section>
+  <section class="graficos">
+    <div class="card"><h3>Duración planificada</h3><div id="hist"></div></div>
+    <div class="card"><h3>Área vs costo planificado</h3><div id="disp"></div></div>
+    <div class="card"><h3>Costo por m² por tipo</h3><div id="caja"></div></div>
+    <div class="card"><h3>Riesgo promedio por tipo</h3><div id="riesgo"></div></div>
+    <div class="card"><h3>Pareto del presupuesto</h3><div id="pareto"></div></div>
+    <div class="card"><h3>Matriz de riesgo: riesgo vs costo por m²</h3><div id="matriz"></div></div>
+    <div class="card"><h3>Correlaciones</h3><div id="calor"></div></div>
+  </section>
+</main>
+<script>
+const TIPOS = {Hospital:"Hospital",Commercial:"Comercial",Industrial:"Industrial",Institutional:"Institucional",Residential:"Residencial"};
+const NUM = ["floors","area_m2","complexity","contractor_capability","resource_availability","management_maturity",
+  "weather_exposure","supply_chain_exposure","technology_maturity","planned_duration_days","planned_cost"];
+const ETIQ = {floors:"pisos",area_m2:"área",complexity:"complejidad",contractor_capability:"cap. contratista",
+  resource_availability:"recursos",management_maturity:"gestión",weather_exposure:"clima",supply_chain_exposure:"suministro",
+  technology_maturity:"tecnología",planned_duration_days:"duración",planned_cost:"costo",costo_m2:"costo/m²"};
+
+const media = a => a.reduce((s,v)=>s+v,0)/a.length;
+function pearson(a,b){ const ma=media(a), mb=media(b); let n=0,da=0,db=0;
+  for(let i=0;i<a.length;i++){ n+=(a[i]-ma)*(b[i]-mb); da+=(a[i]-ma)**2; db+=(b[i]-mb)**2; } return n/Math.sqrt(da*db); }
+const fmt = (v,d=0) => v.toLocaleString("es-PE",{minimumFractionDigits:d,maximumFractionDigits:d});
+
+let BASE = [];
+
+function leer(texto){
+  const lin = texto.trim().split(/\r?\n/); const cab = lin[0].split(",").map(s=>s.trim());
+  const vistos = new Set(); const filas = [];
+  for(const l of lin.slice(1)){
+    const c = l.split(",").map(s=>s.trim()); const clave = c.slice(1).join("|");
+    if(vistos.has(clave)) continue; vistos.add(clave);
+    const o = {}; cab.forEach((n,i)=>{ o[n] = NUM.includes(n) ? parseFloat(c[i]) : c[i]; });
+    o.tipo = TIPOS[o.project_type] || o.project_type; o.costo_m2 = o.planned_cost / o.area_m2;
+    o.riesgo = (o.weather_exposure + o.supply_chain_exposure + (1-o.contractor_capability) + (1-o.resource_availability) + (1-o.management_maturity) + (1-o.technology_maturity)) / 6;
+    filas.push(o);
+  }
+  return {filas, total: lin.length-1};
+}
+
+function dibujar(){
+  const f = document.getElementById("filtro").value;
+  const d = f==="Todos" ? BASE : BASE.filter(x=>x.tipo===f);
+  if(!d.length) return;
+  const cm2 = d.map(x=>x.costo_m2), dur = d.map(x=>x.planned_duration_days);
+  const kp = [["Proyectos", d.length],
+    ["Presupuesto total","S/ "+fmt(d.reduce((a,x)=>a+x.planned_cost,0)/1e6)+" M"],
+    ["Costo por m²","S/ "+fmt(media(cm2))], ["Duración promedio", fmt(media(dur))+" días"],
+    ["Riesgo promedio (0-1)", fmt(media(d.map(x=>x.riesgo)),2)]];
+  document.getElementById("kpis").innerHTML = kp.map(([t,v])=>`<div class="card kpi"><span>${t}</span><strong>${v}</strong></div>`).join("");
+
+  Plotly.newPlot("hist",[{x:dur,type:"histogram",nbinsx:20,marker:{color:"#2a6f97"}}],
+    {xaxis:{title:"Días"},yaxis:{title:"Proyectos"},margin:{t:10}},{responsive:true});
+  const tipos = [...new Set(d.map(x=>x.tipo))];
+  Plotly.newPlot("disp", tipos.map(t=>{ const s=d.filter(x=>x.tipo===t);
+    return {x:s.map(x=>x.area_m2),y:s.map(x=>x.planned_cost),mode:"markers",name:t,type:"scatter",text:s.map(x=>x.project_id)}; }),
+    {xaxis:{title:"Área (m²)"},yaxis:{title:"Costo (S/)"},margin:{t:10}},{responsive:true});
+  Plotly.newPlot("caja", tipos.map(t=>({y:d.filter(x=>x.tipo===t).map(x=>x.costo_m2),type:"box",name:t})),
+    {yaxis:{title:"Costo por m² (S/)"},showlegend:false,margin:{t:10}},{responsive:true});
+  Plotly.newPlot("riesgo",[{x:tipos,y:tipos.map(t=>media(d.filter(x=>x.tipo===t).map(x=>x.riesgo))),type:"bar",marker:{color:"#e76f51"}}],
+    {yaxis:{title:"Índice de riesgo (0-1)"},margin:{t:10}},{responsive:true});
+  const ord = [...d].sort((a,b)=>b.planned_cost-a.planned_cost); const tot = ord.reduce((a,x)=>a+x.planned_cost,0); let ac=0;
+  const acum = ord.map(x=>{ ac+=x.planned_cost; return ac/tot*100; });
+  Plotly.newPlot("pareto",[{x:ord.map(x=>x.project_id),y:ord.map(x=>x.planned_cost),type:"bar",name:"Costo (S/)"},
+    {x:ord.map(x=>x.project_id),y:acum,type:"scatter",mode:"lines",name:"% acumulado",yaxis:"y2",line:{color:"red"}}],
+    {yaxis:{title:"Costo (S/)"},yaxis2:{title:"% acumulado",overlaying:"y",side:"right",range:[0,100]},showlegend:false,margin:{t:10}},{responsive:true});
+  const rm = media(d.map(x=>x.riesgo)), cmm = media(cm2);
+  Plotly.newPlot("matriz", tipos.map(t=>{ const s=d.filter(x=>x.tipo===t);
+    return {x:s.map(x=>x.riesgo),y:s.map(x=>x.costo_m2),mode:"markers",name:t,type:"scatter",text:s.map(x=>x.project_id)}; }),
+    {xaxis:{title:"Índice de riesgo (0-1)"},yaxis:{title:"Costo por m² (S/)"},margin:{t:10},
+     shapes:[{type:"line",x0:rm,x1:rm,y0:0,y1:1,yref:"paper",line:{dash:"dash",color:"gray"}},
+             {type:"line",x0:0,x1:1,xref:"paper",y0:cmm,y1:cmm,line:{dash:"dash",color:"gray"}}]},{responsive:true});
+  const cols = [...NUM.filter(n=>n!=="planned_cost"&&n!=="planned_duration_days"), "planned_duration_days","planned_cost","costo_m2"];
+  const nom = cols.map(c=>ETIQ[c]);
+  const z = cols.map(a=>cols.map(b=>pearson(d.map(x=>x[a]),d.map(x=>x[b]))));
+  Plotly.newPlot("calor",[{z,x:nom,y:nom,type:"heatmap",zmin:-1,zmax:1,colorscale:"RdBu",reversescale:true}],
+    {margin:{t:10,l:110,b:110}},{responsive:true});
+}
+
+document.getElementById("archivo").addEventListener("change", e=>{
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    const {filas,total} = leer(r.result); BASE = filas;
+    document.getElementById("estado").textContent = `${total} registros recibidos · ${total-filas.length} duplicados excluidos · ${filas.length} analizados`;
+    const sel = document.getElementById("filtro"); sel.disabled = false;
+    sel.innerHTML = '<option value="Todos">Todos</option>' + [...new Set(filas.map(x=>x.tipo))].sort().map(t=>`<option>${t}</option>`).join("");
+    dibujar();
+  };
+  r.readAsText(f);
+});
+document.getElementById("filtro").addEventListener("change", dibujar);
+</script>
+</body>
+</html>
